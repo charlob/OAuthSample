@@ -10,12 +10,14 @@ arrive instead of guessing why it didn't.
 
 ## Two forms: without vs with an OAuth library
 
+On launch, a chooser (`LauncherForm`) lets you pick which one to run:
+
 - **`MainForm`** — the flow built by hand, using **no OAuth library**. It builds
   the authorize request, does PKCE and the `state` check, and swaps the code for
   tokens itself, so you can *see* every step.
-- **`OidcClientForm`** — the same login via the **`IdentityModel.OidcClient`**
+- **`OidcClientForm`** — the same login via the **`Duende.IdentityModel.OidcClient`**
   library. One `LoginAsync()` call does discovery, PKCE, the `state` check and the
-  token exchange. Open it with the **"OidcClient version →"** button on `MainForm`.
+  token exchange.
 
 Both forms share the callback capture (`LoopbackCallbackListener`): `http` via
 `HttpListener`, `https` via in-process TLS. The library's own browser only does
@@ -29,7 +31,8 @@ is orthogonal** — you still supply the listener when the IdP forces
 
 1. Open `OAuthSample.sln` in Visual Studio and run (F5), or build the
    `OAuthSample` project.
-2. Fill in:
+2. On the opening screen, choose **Hand-rolled** or **OidcClient library**.
+3. Fill in:
    - **Authority** – the IdP base URL (pre-filled with MLA SSO).
    - **Client ID** – your application's client id.
    - **Callback URI** – must **exactly match** a redirect URI registered on the
@@ -38,7 +41,8 @@ is orthogonal** — you still supply the listener when the IdP forces
    - **Scope** – defaults to `openid profile email`.
    - **Audience** – optional; set it (to your API identifier) if you need an
      Auth0 **access token** for a specific API rather than just an id token.
-3. Click **Connect**. Your browser opens for sign-in/consent; after approval the
+     *(Hand-rolled form only.)*
+4. Click **Connect** (or **Login**). Your browser opens for sign-in/consent; after approval the
    app captures the `code`, exchanges it at `/oauth/token`, and logs the tokens.
 
 ## How the callback capture is done (and why the usual bug is avoided)
@@ -93,7 +97,7 @@ Use `https` only when the IdP forces it (e.g. the client is registered with an
   assemblies. JSON is pretty-printed via `System.Web.Extensions`'
   `JavaScriptSerializer`, and the self-signed cert is built with the framework's
   `CertificateRequest` API. Only **`OidcClientForm`** pulls a package
-  (`IdentityModel.OidcClient`).
+  (`Duende.IdentityModel.OidcClient`).
 - Loopback (`localhost`) prefixes need no admin rights. A non-localhost prefix
   would require a `netsh http add urlacl` reservation.
 - If you previously bound a cert for testing, you can remove it — it's no longer

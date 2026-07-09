@@ -2,13 +2,13 @@ using System;
 using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using IdentityModel.OidcClient;
+using Duende.IdentityModel.OidcClient;
 
 namespace OAuthSample
 {
     /// <summary>
     /// The same OAuth 2.0 Authorization Code + PKCE login as <see cref="MainForm"/>, but
-    /// driven by the <c>IdentityModel.OidcClient</c> library instead of hand-rolled code.
+    /// driven by the <c>Duende.IdentityModel.OidcClient</c> library instead of hand-rolled code.
     /// The library does discovery, PKCE, the <c>state</c> check, and the token exchange;
     /// all we supply is a browser (<see cref="TlsLoopbackBrowser"/>) that can capture an
     /// https loopback callback.

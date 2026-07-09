@@ -23,12 +23,13 @@
   <ItemGroup>
     <!-- Used only by OidcClientForm (the library-based second form). MainForm and the
          in-process TLS listener use no NuGet packages.
-         NOTE: the IdentityModel libraries have since moved to Duende. If restore fails
-         or you want the current package, switch this to
-             Duende.IdentityModel.OidcClient
-         and change the `using IdentityModel.OidcClient*` lines to
-             using Duende.IdentityModel.OidcClient*   (Browser sub-namespace too). -->
-    <PackageReference Include="IdentityModel.OidcClient" Version="5.*" />
+         This is the current Duende-branded package (the old IdentityModel.OidcClient is
+         end-of-life). If restore complains about the target framework, confirm the
+         chosen version still ships a netstandard2.0 build (net48-compatible); older
+         releases like the pre-Duende `IdentityModel.OidcClient` 5.x also work if you
+         change the `using Duende.IdentityModel.OidcClient*` lines back to
+         `using IdentityModel.OidcClient*`. -->
+    <PackageReference Include="Duende.IdentityModel.OidcClient" Version="6.*" />
   </ItemGroup>
 
 </Project>
