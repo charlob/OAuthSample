@@ -8,21 +8,22 @@ It exists to make one thing obvious: **where the callback is captured**. Every
 request that hits the loopback listener is logged, so you can watch the `?code=`
 arrive instead of guessing why it didn't.
 
-## Two forms: hand-rolled vs library
+## Two forms: without vs with an OAuth library
 
-- **`MainForm`** — the flow built by hand (`HttpListener` for http, raw
-  `TcpListener` + `SslStream` for https). No NuGet packages. Best for *seeing*
-  every step.
+- **`MainForm`** — the flow built by hand, using **no OAuth library**. It builds
+  the authorize request, does PKCE and the `state` check, and swaps the code for
+  tokens itself, so you can *see* every step.
 - **`OidcClientForm`** — the same login via the **`IdentityModel.OidcClient`**
   library. One `LoginAsync()` call does discovery, PKCE, the `state` check and the
   token exchange. Open it with the **"OidcClient version →"** button on `MainForm`.
 
-The library form still needs a browser that can capture an **https** loopback
-callback (OidcClient's built-in one uses `http://localhost`, which MLA rejects),
-so it plugs in `TlsLoopbackBrowser` — a custom `IBrowser` that reuses the same
-in-process TLS listener. That's the key lesson: **a library removes ~90% of the
-boilerplate, but the https-loopback problem is orthogonal** — you still supply the
-listener when the IdP forces `https://localhost`.
+Both forms share the callback capture (`LoopbackCallbackListener`): `http` via
+`HttpListener`, `https` via in-process TLS. The library's own browser only does
+`http://localhost` (which MLA rejects), so `OidcClientForm` plugs in
+`TlsLoopbackBrowser` — a custom `IBrowser` wrapping that same listener. The key
+lesson: **a library removes ~90% of the boilerplate, but the https-loopback problem
+is orthogonal** — you still supply the listener when the IdP forces
+`https://localhost`.
 
 ## Using it
 
@@ -48,7 +49,7 @@ listener when the IdP forces `https://localhost`.
   which the browser **never** sends — so a server-side `HttpListener` can never
   see it. That fragment trap is the most common reason a listener "doesn't
   capture" the response.
-- **Listen on the loopback root**, e.g. `http://localhost:5000/`, and inspect
+- **Listen on the loopback root**, e.g. `http://localhost:5021/`, and inspect
   the path/query ourselves. `HttpListener` prefix matching is picky about
   trailing slashes (`/callback` vs `/callback/`), and a mismatched prefix is the
   other common reason the listener silently never fires.
@@ -56,7 +57,7 @@ listener when the IdP forces `https://localhost`.
   listener loops and only completes on the request that actually carries `code`.
 - **PKCE (S256)** and a **`state`** check are included; `state` is verified to
   guard against CSRF.
-- **TLS 1.2/1.3** is pinned in `Program.cs` because .NET Framework 4.8 can
+- **TLS 1.2** is pinned in `Program.cs` because .NET Framework 4.8 can
   otherwise negotiate an older protocol the IdP rejects.
 
 ## HTTP vs HTTPS callbacks (this matters a lot on Windows)
@@ -88,9 +89,11 @@ Use `https` only when the IdP forces it (e.g. the client is registered with an
 
 ## Notes
 
-- Pure Framework assemblies only — no NuGet packages. JSON is pretty-printed via
-  `System.Web.Extensions`' `JavaScriptSerializer`; the self-signed cert is built
-  with the framework's `CertificateRequest` API.
+- **`MainForm` and the loopback listener use no NuGet packages** — pure Framework
+  assemblies. JSON is pretty-printed via `System.Web.Extensions`'
+  `JavaScriptSerializer`, and the self-signed cert is built with the framework's
+  `CertificateRequest` API. Only **`OidcClientForm`** pulls a package
+  (`IdentityModel.OidcClient`).
 - Loopback (`localhost`) prefixes need no admin rights. A non-localhost prefix
   would require a `netsh http add urlacl` reservation.
 - If you previously bound a cert for testing, you can remove it — it's no longer
