@@ -11,6 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Logo files (and this folder's README) are copied next to the exe so the
+         landing page can embed them at runtime. Drop emydex.png / mla.png in assets\. -->
+    <None Update="assets\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- WinForms + framework assemblies. UseWindowsForms is .NET Core+ only,
          so for net48 we reference the GAC assemblies explicitly. -->
     <Reference Include="System.Windows.Forms" />

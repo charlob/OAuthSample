@@ -53,10 +53,13 @@ holds the response open for the ~200 ms the token exchange takes, so its page
 shows **who signed in and when the access token expires**; the **OidcClient**
 form does the exchange inside the library after the browser returns, so it shows
 the generic "Authentication complete" page (user/expiry appear in the app log).
+The terminal pages include a **Close this tab** button (with a fallback hint,
+since browsers only allow `window.close()` on script-opened tabs).
 
-The two brand marks (`Emydex` / `MLA`) are **placeholders** — replace the `Chip(...)`
-calls in `LandingPage.cs` with an inline image to use the real logos:
-`<img class='logo-img' src='data:image/png;base64,…' alt='Emydex'>`.
+**Logos:** drop `emydex.png` and `mla.png` (or `.svg`/`.jpg`) into
+`OAuthSample/assets/`. They're copied next to the built `.exe` and embedded into
+the page as base64 data URIs at runtime; if a file is missing, a text placeholder
+is shown for that logo.
 
 ## How the callback capture is done (and why the usual bug is avoided)
 
