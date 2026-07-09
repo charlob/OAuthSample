@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>OAuthSample</RootNamespace>
+    <AssemblyName>OAuthSample</AssemblyName>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinForms + framework assemblies. UseWindowsForms is .NET Core+ only,
+         so for net48 we reference the GAC assemblies explicitly. -->
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
+    <!-- JavaScriptSerializer, used to pretty-print the token JSON with no NuGet deps. -->
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+</Project>
