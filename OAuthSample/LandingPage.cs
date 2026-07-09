@@ -74,33 +74,24 @@ namespace OAuthSample
         /// </summary>
         private static string Logo(string baseName, string fallbackText)
         {
-            try
+            string path = Assets.FindAny(baseName);
+            if (path != null)
             {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string[] dirs = { Path.Combine(baseDir, "assets"), baseDir };
-                string[] exts = { ".png", ".svg", ".jpg", ".jpeg", ".gif" };
-
-                foreach (var dir in dirs)
+                try
                 {
-                    foreach (var ext in exts)
-                    {
-                        string path = Path.Combine(dir, baseName + ext);
-                        if (!File.Exists(path))
-                            continue;
-
-                        string mime =
-                            ext == ".svg" ? "image/svg+xml" :
-                            ext == ".jpg" || ext == ".jpeg" ? "image/jpeg" :
-                            ext == ".gif" ? "image/gif" : "image/png";
-                        string data = Convert.ToBase64String(File.ReadAllBytes(path));
-                        return "<img class='logo-img' src='data:" + mime + ";base64," + data + "' alt='" +
-                               WebUtility.HtmlEncode(fallbackText) + "'>";
-                    }
+                    string ext = Path.GetExtension(path).ToLowerInvariant();
+                    string mime =
+                        ext == ".svg" ? "image/svg+xml" :
+                        ext == ".jpg" || ext == ".jpeg" ? "image/jpeg" :
+                        ext == ".gif" ? "image/gif" : "image/png";
+                    string data = Convert.ToBase64String(File.ReadAllBytes(path));
+                    return "<img class='logo-img' src='data:" + mime + ";base64," + data + "' alt='" +
+                           WebUtility.HtmlEncode(fallbackText) + "'>";
                 }
-            }
-            catch
-            {
-                // fall through to the text placeholder
+                catch
+                {
+                    // fall through to the text placeholder
+                }
             }
 
             return "<span class='logo'>" + WebUtility.HtmlEncode(fallbackText) + "</span>";

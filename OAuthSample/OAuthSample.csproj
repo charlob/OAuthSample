@@ -24,6 +24,8 @@
     <Reference Include="System.Net.Http" />
     <!-- JavaScriptSerializer, used to pretty-print the token JSON in MainForm. -->
     <Reference Include="System.Web.Extensions" />
+    <!-- ProtectedData (DPAPI), used by TokenStore to encrypt the saved refresh token. -->
+    <Reference Include="System.Security" />
   </ItemGroup>
 
   <ItemGroup>

@@ -45,6 +45,28 @@ is orthogonal** — you still supply the listener when the IdP forces
 4. Click **Connect** (or **Login**). Your browser opens for sign-in/consent; after approval the
    app captures the `code`, exchanges it at `/oauth/token`, and logs the tokens.
 
+## Saved session (refresh token) — Connect / Refresh / Delete
+
+Both forms persist the session so you don't re-authenticate every launch — the
+desktop equivalent of a token cache (not a browser cookie):
+
+- **Connect / Login** — interactive browser login. Enabled only when there's **no**
+  saved session.
+- **Refresh token** — renews the access token from the stored **refresh token**
+  with no browser (`grant_type=refresh_token` / OidcClient's `RefreshTokenAsync`).
+  Enabled only when a saved session exists.
+- **Delete saved token** — forgets the session; Connect re-enables, Refresh disables.
+
+The record (`{ refresh_token, access_token, id_token, expires_at, user }`) is stored
+**encrypted with Windows DPAPI** (`ProtectedData`, `CurrentUser` scope) under
+`%LOCALAPPDATA%\OAuthSample\session.dat` — a refresh token is a long-lived bearer
+credential, so it's never written in plaintext, and another user on the machine
+can't read it. Both forms share the same store.
+
+To actually get a refresh token, the IdP must issue one: the default scope now
+includes **`offline_access`**, and the MLA/Auth0 client must allow it. Without it
+you'll see "no refresh token" and only interactive login is available.
+
 ## The landing page
 
 After the redirect, the browser shows a small self-contained page

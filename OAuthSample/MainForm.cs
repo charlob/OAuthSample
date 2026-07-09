@@ -13,20 +13,18 @@ using System.Windows.Forms;
 namespace OAuthSample
 {
     /// <summary>
-    /// Minimal WinForms harness that walks the OAuth 2.0 Authorization Code + PKCE
-    /// flow end to end and logs every step, so you can watch exactly where a
-    /// callback is (or isn't) being captured.
-    ///
-    /// The callback capture itself lives in <see cref="LoopbackCallbackListener"/>
-    /// (shared with the OidcClient-based <see cref="OidcClientForm"/>): http via
-    /// <see cref="System.Net.HttpListener"/>, https via in-process TLS. This form owns
-    /// the parts that are the actual lesson: building the request, PKCE, the state
-    /// check, the token exchange, and rendering the signed-in landing page.
+    /// Hand-rolled OAuth 2.0 Authorization Code + PKCE flow, with a persisted, silently
+    /// refreshable session:
+    ///   Connect  — interactive login (browser), enabled only when there's no saved session.
+    ///   Refresh  — renew the access token from the stored refresh token (no browser).
+    ///   Delete   — forget the saved session.
+    /// The refresh token is stored encrypted (see <see cref="TokenStore"/>). Callback capture
+    /// lives in <see cref="LoopbackCallbackListener"/>.
     /// </summary>
     public sealed class MainForm : Form
     {
-        // Shared HttpClient for the token exchange.
         private static readonly HttpClient Http = new HttpClient();
+        private readonly TokenStore _store = new TokenStore();
 
         private readonly TextBox _txtAuthority;
         private readonly TextBox _txtClientId;
@@ -34,14 +32,19 @@ namespace OAuthSample
         private readonly TextBox _txtScope;
         private readonly TextBox _txtAudience;
         private readonly Button _btnConnect;
+        private readonly Button _btnRefresh;
+        private readonly Button _btnDelete;
+        private readonly Label _lblStatus;
         private readonly TextBox _txtLog;
+
+        private bool _busy;
 
         public MainForm()
         {
             Text = "OAuth 2.0 Sample (Authorization Code + PKCE)";
             Width = 900;
-            Height = 640;
-            MinimumSize = new Size(700, 480);
+            Height = 660;
+            MinimumSize = new Size(700, 500);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9f);
 
@@ -59,20 +62,25 @@ namespace OAuthSample
             _txtAuthority = AddRow(layout, "Authority", "https://sso-s.mla.com.au");
             _txtClientId = AddRow(layout, "Client ID", "");
             _txtRedirect = AddRow(layout, "Callback URI", "https://localhost:5021/callback/envd/");
-            _txtScope = AddRow(layout, "Scope", "openid profile email");
+            _txtScope = AddRow(layout, "Scope", "openid profile email offline_access");
             _txtAudience = AddRow(layout, "Audience (opt.)", "");
 
-            _btnConnect = new Button
-            {
-                Text = "Connect",
-                AutoSize = true,
-                Padding = new Padding(16, 4, 16, 4),
-                Anchor = AnchorStyles.Left,
-            };
-            _btnConnect.Click += OnConnectClick;
+            _btnConnect = MakeButton("Connect", OnConnectClick);
+            _btnRefresh = MakeButton("Refresh token", OnRefreshClick);
+            _btnDelete = MakeButton("Delete saved token", OnDeleteClick);
 
+            var buttonRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
+            buttonRow.Controls.Add(_btnConnect);
+            buttonRow.Controls.Add(_btnRefresh);
+            buttonRow.Controls.Add(_btnDelete);
             layout.Controls.Add(new Label { Text = "", AutoSize = true }, 0, layout.RowCount);
-            layout.Controls.Add(_btnConnect, 1, layout.RowCount);
+            layout.Controls.Add(buttonRow, 1, layout.RowCount);
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowCount++;
+
+            _lblStatus = new Label { AutoSize = true, Margin = new Padding(3, 6, 3, 6), ForeColor = SystemColors.GrayText };
+            layout.Controls.Add(_lblStatus, 0, layout.RowCount);
+            layout.SetColumnSpan(_lblStatus, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowCount++;
 
@@ -92,19 +100,29 @@ namespace OAuthSample
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowCount++;
 
+            // Pre-fill from a saved session so the shown client matches the stored token.
+            var saved = _store.Load();
+            if (saved != null)
+            {
+                if (!string.IsNullOrEmpty(saved.Authority)) _txtAuthority.Text = saved.Authority;
+                if (!string.IsNullOrEmpty(saved.ClientId)) _txtClientId.Text = saved.ClientId;
+            }
+
             Log("Ready. Fill in Client ID (and adjust Callback URI to match what's");
             Log("registered at the IdP), then click Connect.");
+            UpdateButtons();
+        }
+
+        private static Button MakeButton(string text, EventHandler onClick)
+        {
+            var btn = new Button { Text = text, AutoSize = true, Padding = new Padding(14, 4, 14, 4), Margin = new Padding(0, 0, 8, 0), Anchor = AnchorStyles.Left };
+            btn.Click += onClick;
+            return btn;
         }
 
         private static TextBox AddRow(TableLayoutPanel layout, string label, string value)
         {
-            var lbl = new Label
-            {
-                Text = label,
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 8, 3, 3),
-            };
+            var lbl = new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 3, 3) };
             var box = new TextBox { Text = value, Dock = DockStyle.Fill };
             int row = layout.RowCount;
             layout.Controls.Add(lbl, 0, row);
@@ -114,21 +132,45 @@ namespace OAuthSample
             return box;
         }
 
+        // --- button state -----------------------------------------------------------
+
+        private void UpdateButtons()
+        {
+            if (InvokeRequired) { BeginInvoke(new Action(UpdateButtons)); return; }
+
+            var rec = _store.Load();
+            bool hasSession = rec != null && rec.HasRefreshToken;
+
+            _btnConnect.Enabled = !_busy && !hasSession;
+            _btnRefresh.Enabled = !_busy && hasSession;
+            _btnDelete.Enabled = !_busy && rec != null;
+
+            if (rec == null)
+            {
+                _lblStatus.Text = "No saved session.";
+            }
+            else
+            {
+                string expiry = rec.ExpiresAt == DateTimeOffset.MinValue ? "unknown" : rec.ExpiresAt.ToLocalTime().ToString("g");
+                _lblStatus.Text = "Saved session: " + rec.UserName + "  ·  access expires " + expiry +
+                    (rec.HasRefreshToken ? "  ·  refresh token stored" : "  ·  no refresh token (add offline_access)");
+            }
+        }
+
+        private void SetBusy(bool busy)
+        {
+            _busy = busy;
+            UpdateButtons();
+        }
+
+        // --- Connect (interactive) --------------------------------------------------
+
         private async void OnConnectClick(object sender, EventArgs e)
         {
-            _btnConnect.Enabled = false;
-            try
-            {
-                await RunFlowAsync();
-            }
-            catch (Exception ex)
-            {
-                Log("ERROR: " + ex.Message);
-            }
-            finally
-            {
-                _btnConnect.Enabled = true;
-            }
+            SetBusy(true);
+            try { await RunFlowAsync(); }
+            catch (Exception ex) { Log("ERROR: " + ex.Message); }
+            finally { SetBusy(false); }
         }
 
         private async Task RunFlowAsync()
@@ -139,16 +181,8 @@ namespace OAuthSample
             string scope = _txtScope.Text.Trim();
             string audience = _txtAudience.Text.Trim();
 
-            if (string.IsNullOrEmpty(clientId))
-            {
-                Log("Please enter a Client ID.");
-                return;
-            }
-            if (!Uri.TryCreate(redirectUri, UriKind.Absolute, out var redirect))
-            {
-                Log("Callback URI is not a valid absolute URL.");
-                return;
-            }
+            if (string.IsNullOrEmpty(clientId)) { Log("Please enter a Client ID."); return; }
+            if (!Uri.TryCreate(redirectUri, UriKind.Absolute, out var redirect)) { Log("Callback URI is not a valid absolute URL."); return; }
 
             string state = RandomUrlToken(16);
             string codeVerifier = RandomUrlToken(32);
@@ -171,8 +205,6 @@ namespace OAuthSample
             Log("  state:     " + state);
             Log("  challenge: " + codeChallenge + " (S256)");
 
-            // renderResult runs when the real callback arrives, with the browser response
-            // still open — so we validate, exchange, and hand back the finished page.
             async Task<string> RenderResult(CallbackInfo ci)
             {
                 if (ci.Error != null)
@@ -193,34 +225,88 @@ namespace OAuthSample
 
                 Log("");
                 Log("Authorization code captured. Exchanging for tokens...");
-                var (name, expiry) = await ExchangeCodeAsync(authority, clientId, redirectUri, ci.Code, codeVerifier);
-                if (name == null)
+                var record = await ExchangeCodeAsync(authority, clientId, redirectUri, ci.Code, codeVerifier);
+                if (record == null)
                     return LandingPage.Error("Token exchange failed — see the app log.");
-                return LandingPage.Success(name, expiry);
+
+                _store.Save(record);
+                if (!record.HasRefreshToken)
+                    Log("  (No refresh token returned — add 'offline_access' to Scope and allow it on the IdP client.)");
+                return LandingPage.Success(record.UserName, record.ExpiresAt);
             }
 
             var listener = new LoopbackCallbackListener(Log);
-            Task<CallbackInfo> waitForCallback =
-                listener.WaitForCallbackAsync(redirect, CancellationToken.None, RenderResult);
+            Task<CallbackInfo> waitForCallback = listener.WaitForCallbackAsync(redirect, CancellationToken.None, RenderResult);
 
             Log("Opening browser for authorization...");
             LaunchBrowser(authorizeUrl.ToString());
 
-            try
-            {
-                await waitForCallback;
-            }
-            catch (Exception ex)
-            {
-                Log("Listener error: " + ex.Message);
-            }
+            try { await waitForCallback; }
+            catch (Exception ex) { Log("Listener error: " + ex.Message); }
         }
 
-        // --- token exchange --------------------------------------------------------
+        // --- Refresh (silent) -------------------------------------------------------
 
-        /// <summary>Exchanges the code for tokens, logs them, and returns the display name
-        /// and access-token expiry for the landing page. Returns (null, default) on failure.</summary>
-        private async Task<(string name, DateTimeOffset expiry)> ExchangeCodeAsync(
+        private async void OnRefreshClick(object sender, EventArgs e)
+        {
+            SetBusy(true);
+            try { await RefreshAsync(); }
+            catch (Exception ex) { Log("ERROR: " + ex.Message); }
+            finally { SetBusy(false); }
+        }
+
+        private async Task RefreshAsync()
+        {
+            var rec = _store.Load();
+            if (rec == null || !rec.HasRefreshToken) { Log("No saved refresh token to use."); return; }
+
+            var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["client_id"] = rec.ClientId,
+                ["refresh_token"] = rec.RefreshToken,
+            });
+
+            string tokenUrl = rec.Authority.TrimEnd('/') + "/oauth/token";
+            Log("");
+            Log("Refreshing access token (no browser)...");
+            Log("  POST " + tokenUrl);
+
+            HttpResponseMessage resp = await Http.PostAsync(tokenUrl, form);
+            string body = await resp.Content.ReadAsStringAsync();
+            Log("  HTTP " + (int)resp.StatusCode + " " + resp.StatusCode);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                Log("  Refresh failed:");
+                Log("  " + body);
+                if (body.IndexOf("invalid_grant", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Log("  Refresh token is no longer valid — clearing the saved session.");
+                    _store.Clear();
+                }
+                return;
+            }
+
+            var updated = BuildRecord(rec.Authority, rec.ClientId, body, rec.RefreshToken, rec.UserName);
+            _store.Save(updated);
+            Log("  Access token refreshed. Expires " +
+                (updated.ExpiresAt == DateTimeOffset.MinValue ? "unknown" : updated.ExpiresAt.ToLocalTime().ToString("g")));
+        }
+
+        // --- Delete -----------------------------------------------------------------
+
+        private void OnDeleteClick(object sender, EventArgs e)
+        {
+            _store.Clear();
+            Log("Saved session deleted.");
+            UpdateButtons();
+        }
+
+        // --- token endpoint ---------------------------------------------------------
+
+        /// <summary>Exchanges an authorization code for tokens; returns a record to persist, or null.</summary>
+        private async Task<TokenRecord> ExchangeCodeAsync(
             string authority, string clientId, string redirectUri, string code, string codeVerifier)
         {
             var form = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -237,16 +323,23 @@ namespace OAuthSample
 
             HttpResponseMessage resp = await Http.PostAsync(tokenUrl, form);
             string body = await resp.Content.ReadAsStringAsync();
-
             Log("  HTTP " + (int)resp.StatusCode + " " + resp.StatusCode);
 
             if (!resp.IsSuccessStatusCode)
             {
                 Log("  Token endpoint returned an error:");
                 Log("  " + body);
-                return (null, default);
+                return null;
             }
 
+            return BuildRecord(authority, clientId, body, null, null);
+        }
+
+        /// <summary>Parses a token-endpoint JSON body, logs it, and builds a persistable record.
+        /// <paramref name="existingRefresh"/>/<paramref name="existingUser"/> are kept when the
+        /// response omits them (refresh responses often don't re-send the id_token or a new refresh token).</summary>
+        private TokenRecord BuildRecord(string authority, string clientId, string body, string existingRefresh, string existingUser)
+        {
             Dictionary<string, object> map = null;
             try { map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body); }
             catch { /* fall back to raw body below */ }
@@ -269,7 +362,32 @@ namespace OAuthSample
             }
             Log("======================");
 
-            return (DisplayNameFrom(map), ExpiryFrom(map));
+            string refresh = existingRefresh;
+            string access = null, id = null;
+            if (map != null)
+            {
+                if (map.TryGetValue("refresh_token", out var rt) && rt != null && rt.ToString().Length > 0)
+                    refresh = rt.ToString();
+                if (map.TryGetValue("access_token", out var at)) access = at?.ToString();
+                if (map.TryGetValue("id_token", out var it)) id = it?.ToString();
+            }
+
+            string name = DisplayNameFrom(map);
+            if (name == "(unknown user)" && !string.IsNullOrEmpty(existingUser))
+                name = existingUser;
+
+            DateTimeOffset expiry = ExpiryFrom(map);
+
+            return new TokenRecord
+            {
+                Authority = authority,
+                ClientId = clientId,
+                RefreshToken = refresh,
+                AccessToken = access,
+                IdToken = id,
+                UserName = name,
+                ExpiresAtUnix = expiry == DateTimeOffset.MinValue ? 0 : expiry.ToUnixTimeSeconds(),
+            };
         }
 
         // --- claims / expiry extraction --------------------------------------------
@@ -356,10 +474,7 @@ namespace OAuthSample
 
         private static string Base64Url(byte[] data)
         {
-            return Convert.ToBase64String(data)
-                .TrimEnd('=')
-                .Replace('+', '-')
-                .Replace('/', '_');
+            return Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
 
         private void Log(string message)
