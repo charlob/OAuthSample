@@ -67,6 +67,25 @@ To actually get a refresh token, the IdP must issue one: the default scope now
 includes **`offline_access`**, and the MLA/Auth0 client must allow it. Without it
 you'll see "no refresh token" and only interactive login is available.
 
+## Call test API (GraphQL)
+
+The **Call test API** button POSTs the `GetUserDetails` GraphQL query to the URL in
+the **GraphQL API** field, using the stored **access token** as `Authorization:
+Bearer`. The raw response is written to a separate **API Console** window (cleared
+each call), and the `envdAccountId` is pulled out of the response into the **envd
+Account Id** box (used as a header on subsequent calls). Enabled only when a token
+is stored.
+
+Two things to know:
+
+- **Audience.** For the IdP to issue an access token the API will accept, the login
+  must request the right **Audience** (API identifier). The hand-rolled form has an
+  Audience field; because both forms share the token store, a token obtained there
+  is reused by the OidcClient form too. Without the correct audience an Auth0 access
+  token is opaque and the API returns 401.
+- **Endpoint.** Put the eNVD GraphQL endpoint in the **GraphQL API** field (left
+  blank by default).
+
 ## The landing page
 
 After the redirect, the browser shows a small self-contained page
