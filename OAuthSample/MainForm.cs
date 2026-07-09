@@ -2,13 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Net;
 using System.Net.Http;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Authentication;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,12 +17,12 @@ namespace OAuthSample
     /// flow end to end and logs every step, so you can watch exactly where a
     /// callback is (or isn't) being captured.
     ///
-    /// HTTP callbacks are captured with <see cref="HttpListener"/> (simple, uses
-    /// http.sys). HTTPS callbacks are captured with a raw <see cref="TcpListener"/>
-    /// + <see cref="SslStream"/> so TLS is terminated IN-PROCESS — this deliberately
-    /// bypasses http.sys, which will not route an HTTPS request to an HttpListener on
-    /// loopback (it returns 503 even with an sslcert bound). The app provisions and
-    /// trusts its own loopback certificate, so no netsh sslcert / urlacl is needed.
+    /// The callback capture itself lives in <see cref="LoopbackCallbackListener"/>
+    /// (shared with the OidcClient-based <see cref="OidcClientForm"/>): http via
+    /// <see cref="System.Net.HttpListener"/>, https via in-process TLS
+    /// (<c>TcpListener</c> + <c>SslStream</c>) which bypasses http.sys. This form owns
+    /// the parts that are the actual lesson: building the request, PKCE, the state
+    /// check, and the token exchange.
     /// </summary>
     public sealed class MainForm : Form
     {
@@ -196,329 +191,49 @@ namespace OAuthSample
             Log("  state:     " + state);
             Log("  challenge: " + codeChallenge + " (S256)");
 
-            string code = redirect.Scheme == Uri.UriSchemeHttps
-                ? await CaptureViaTlsAsync(redirect, state, authorizeUrl.ToString())
-                : await CaptureViaHttpListenerAsync(redirect, state, authorizeUrl.ToString());
+            // Start the loopback listener (it binds synchronously before returning the
+            // task), then open the browser. Same shared listener the OidcClient form uses.
+            var listener = new LoopbackCallbackListener(Log);
+            Task<string> waitForCallback = listener.WaitForCallbackAsync(redirect, CancellationToken.None);
 
-            if (code == null)
-                return; // reason already logged
+            Log("Opening browser for authorization...");
+            LaunchBrowser(authorizeUrl.ToString());
+
+            string callbackUrl;
+            try
+            {
+                callbackUrl = await waitForCallback;
+            }
+            catch (Exception ex)
+            {
+                Log("Listener error: " + ex.Message);
+                return;
+            }
+
+            // Validate the callback ourselves — this is a "lesson" part of the flow.
+            var callback = ParseQuery(callbackUrl);
+            if (callback.ContainsKey("error"))
+            {
+                Log("  Authorization error: " + callback["error"] + " - " +
+                    (callback.ContainsKey("error_description") ? callback["error_description"] : ""));
+                return;
+            }
+            string returnedState = callback.ContainsKey("state") ? callback["state"] : null;
+            if (returnedState != state)
+            {
+                Log("  WARNING: state mismatch (possible CSRF). Expected " + state + " got " + returnedState);
+                return;
+            }
+            string code = callback.ContainsKey("code") ? callback["code"] : null;
+            if (string.IsNullOrEmpty(code))
+            {
+                Log("  No authorization code found in callback.");
+                return;
+            }
 
             Log("");
             Log("Authorization code captured. Exchanging for tokens...");
             await ExchangeCodeAsync(authority, clientId, redirectUri, code, codeVerifier);
-        }
-
-        // --- HTTP capture (http.sys / HttpListener) --------------------------------
-
-        private async Task<string> CaptureViaHttpListenerAsync(Uri redirect, string expectedState, string authorizeUrl)
-        {
-            // Listen on the loopback ROOT and inspect the path ourselves — HttpListener
-            // prefix matching is fussy about trailing slashes, and a missed match is the
-            // classic "listener never fires" bug.
-            string rootPrefix = redirect.Scheme + "://" + redirect.Host + ":" + redirect.Port + "/";
-
-            var listener = new HttpListener();
-            listener.Prefixes.Add(rootPrefix);
-            try
-            {
-                listener.Start();
-            }
-            catch (HttpListenerException ex)
-            {
-                Log("Could not start listener on " + rootPrefix);
-                Log("  " + ex.Message);
-                Log("  (A conflict means another instance already owns the port.)");
-                return null;
-            }
-
-            using (listener)
-            {
-                Log("Listening on " + rootPrefix);
-                Log("Opening browser for authorization...");
-                LaunchBrowser(authorizeUrl);
-
-                while (true)
-                {
-                    var ctx = await listener.GetContextAsync();
-                    var req = ctx.Request;
-                    Log("  <- " + req.HttpMethod + " " + req.Url.PathAndQuery);
-
-                    string code = req.QueryString["code"];
-                    string error = req.QueryString["error"];
-                    string returnedState = req.QueryString["state"];
-
-                    if (error != null)
-                    {
-                        Log("  Authorization error: " + error + " - " + req.QueryString["error_description"]);
-                        RespondHttpListener(ctx, 400, "Authorization failed: " + WebUtility.HtmlEncode(error));
-                        return null;
-                    }
-                    if (code == null)
-                    {
-                        RespondHttpListener(ctx, 404, "Waiting for OAuth callback...");
-                        continue;
-                    }
-                    if (returnedState != expectedState)
-                    {
-                        Log("  WARNING: state mismatch (possible CSRF). Expected " + expectedState + " got " + returnedState);
-                        RespondHttpListener(ctx, 400, "State mismatch - aborting.");
-                        return null;
-                    }
-
-                    RespondHttpListener(ctx, 200,
-                        "<h2>Authentication complete</h2><p>You can close this window and return to the app.</p>");
-                    return code;
-                }
-            }
-        }
-
-        private static void RespondHttpListener(HttpListenerContext ctx, int status, string html)
-        {
-            try
-            {
-                byte[] buffer = Encoding.UTF8.GetBytes(
-                    "<html><body style='font-family:Segoe UI,Arial,sans-serif'>" + html + "</body></html>");
-                ctx.Response.StatusCode = status;
-                ctx.Response.ContentType = "text/html";
-                ctx.Response.ContentLength64 = buffer.Length;
-                ctx.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                ctx.Response.OutputStream.Close();
-            }
-            catch
-            {
-                // Browser may have already gone; nothing useful to do.
-            }
-        }
-
-        // --- HTTPS capture (in-process TLS, bypasses http.sys) ---------------------
-
-        private async Task<string> CaptureViaTlsAsync(Uri redirect, string expectedState, string authorizeUrl)
-        {
-            Log("HTTPS callback -> terminating TLS in-process (bypassing http.sys).");
-
-            X509Certificate2 cert;
-            try
-            {
-                cert = EnsureLoopbackCertificate();
-            }
-            catch (Exception ex)
-            {
-                Log("Could not provision a TLS certificate: " + ex.Message);
-                return null;
-            }
-
-            // Bind both loopback addresses; the browser may resolve "localhost" to
-            // either 127.0.0.1 or ::1.
-            var listeners = new List<TcpListener>();
-            foreach (var ip in new[] { IPAddress.Loopback, IPAddress.IPv6Loopback })
-            {
-                try
-                {
-                    var l = new TcpListener(ip, redirect.Port);
-                    l.Start();
-                    listeners.Add(l);
-                }
-                catch (SocketException ex)
-                {
-                    Log("  (could not bind " + ip + ":" + redirect.Port + " - " + ex.Message + ")");
-                }
-            }
-            if (listeners.Count == 0)
-            {
-                Log("Could not bind port " + redirect.Port + " on loopback — is another instance already running?");
-                return null;
-            }
-
-            Log("Listening (in-process TLS) on https://" + redirect.Host + ":" + redirect.Port + "/");
-            Log("Opening browser for authorization...");
-            LaunchBrowser(authorizeUrl);
-
-            var result = new TaskCompletionSource<string>();
-            var stop = new CancellationTokenSource();
-
-            async Task AcceptLoop(TcpListener l)
-            {
-                while (!stop.IsCancellationRequested)
-                {
-                    TcpClient client;
-                    try { client = await l.AcceptTcpClientAsync(); }
-                    catch { return; }
-                    _ = HandleClientAsync(client, cert, expectedState, result);
-                }
-            }
-
-            foreach (var l in listeners)
-                _ = AcceptLoop(l);
-
-            try
-            {
-                return await result.Task;
-            }
-            finally
-            {
-                stop.Cancel();
-                foreach (var l in listeners)
-                {
-                    try { l.Stop(); } catch { /* ignore */ }
-                }
-            }
-        }
-
-        private async Task HandleClientAsync(
-            TcpClient client, X509Certificate2 cert, string expectedState, TaskCompletionSource<string> result)
-        {
-            try
-            {
-                using (client)
-                using (var ssl = new SslStream(client.GetStream(), false))
-                {
-                    try
-                    {
-                        await ssl.AuthenticateAsServerAsync(cert, false, SslProtocols.Tls12, false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log("  TLS handshake failed: " + ex.Message);
-                        return;
-                    }
-
-                    string requestLine = await ReadRequestLineAsync(ssl);
-                    if (requestLine == null)
-                        return; // idle/preconnect socket, no request
-
-                    var parts = requestLine.Split(' ');
-                    string method = parts.Length > 0 ? parts[0] : "?";
-                    string target = parts.Length > 1 ? parts[1] : "/";
-                    Log("  <- " + method + " " + target);
-
-                    var q = ParseQuery(target);
-                    string error = q.ContainsKey("error") ? q["error"] : null;
-                    string code = q.ContainsKey("code") ? q["code"] : null;
-                    string returnedState = q.ContainsKey("state") ? q["state"] : null;
-
-                    if (error != null)
-                    {
-                        Log("  Authorization error: " + error + " - " + (q.ContainsKey("error_description") ? q["error_description"] : ""));
-                        await WriteTlsResponseAsync(ssl, 400, "Authorization failed: " + WebUtility.HtmlEncode(error));
-                        result.TrySetResult(null);
-                        return;
-                    }
-                    if (code == null)
-                    {
-                        await WriteTlsResponseAsync(ssl, 404, "Waiting for OAuth callback...");
-                        return; // stray request (favicon, probe) — keep waiting
-                    }
-                    if (returnedState != expectedState)
-                    {
-                        Log("  WARNING: state mismatch (possible CSRF). Expected " + expectedState + " got " + returnedState);
-                        await WriteTlsResponseAsync(ssl, 400, "State mismatch - aborting.");
-                        result.TrySetResult(null);
-                        return;
-                    }
-
-                    await WriteTlsResponseAsync(ssl, 200,
-                        "<h2>Authentication complete</h2><p>You can close this window and return to the app.</p>");
-                    result.TrySetResult(code);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("  (connection error: " + ex.Message + ")");
-            }
-        }
-
-        private static async Task<string> ReadRequestLineAsync(SslStream ssl)
-        {
-            var buffer = new byte[8192];
-            int total = 0;
-            while (total < buffer.Length)
-            {
-                int n = await ssl.ReadAsync(buffer, total, buffer.Length - total);
-                if (n <= 0)
-                    break;
-                total += n;
-                for (int i = 0; i < total; i++)
-                {
-                    if (buffer[i] == (byte)'\n')
-                        return Encoding.ASCII.GetString(buffer, 0, i).TrimEnd('\r');
-                }
-            }
-            return null;
-        }
-
-        private static async Task WriteTlsResponseAsync(SslStream ssl, int status, string bodyHtml)
-        {
-            string reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 400 ? "Bad Request" : "OK";
-            byte[] body = Encoding.UTF8.GetBytes(
-                "<html><body style='font-family:Segoe UI,Arial,sans-serif'>" + bodyHtml + "</body></html>");
-            string head =
-                "HTTP/1.1 " + status + " " + reason + "\r\n" +
-                "Content-Type: text/html; charset=utf-8\r\n" +
-                "Content-Length: " + body.Length + "\r\n" +
-                "Connection: close\r\n\r\n";
-            byte[] headBytes = Encoding.ASCII.GetBytes(head);
-            await ssl.WriteAsync(headBytes, 0, headBytes.Length);
-            await ssl.WriteAsync(body, 0, body.Length);
-            await ssl.FlushAsync();
-        }
-
-        /// <summary>
-        /// Finds (or creates and trusts) a self-signed certificate for localhost in the
-        /// current user's store. No admin rights or netsh needed. The first time it
-        /// creates one, Windows shows a trust-prompt dialog — click Yes.
-        /// </summary>
-        private X509Certificate2 EnsureLoopbackCertificate()
-        {
-            const string subject = "CN=OAuthSample Loopback";
-
-            using (var my = new X509Store(StoreName.My, StoreLocation.CurrentUser))
-            {
-                my.Open(OpenFlags.ReadWrite);
-
-                foreach (var existing in my.Certificates.Find(X509FindType.FindBySubjectDistinguishedName, subject, false))
-                {
-                    if (existing.HasPrivateKey && existing.NotAfter > DateTime.Now.AddDays(1))
-                    {
-                        Log("Using existing loopback certificate (" + subject + ").");
-                        return existing;
-                    }
-                }
-
-                Log("Creating a self-signed loopback certificate (" + subject + ")...");
-                using (var rsa = RSA.Create(2048))
-                {
-                    var req = new CertificateRequest(subject, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-                    var san = new SubjectAlternativeNameBuilder();
-                    san.AddDnsName("localhost");
-                    san.AddIpAddress(IPAddress.Loopback);
-                    san.AddIpAddress(IPAddress.IPv6Loopback);
-                    req.CertificateExtensions.Add(san.Build());
-                    req.CertificateExtensions.Add(
-                        new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
-                    req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-
-                    using (var ephemeral = req.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(2)))
-                    {
-                        // Re-import via PFX so the private key is persisted and usable by SslStream.
-                        var cert = new X509Certificate2(
-                            ephemeral.Export(X509ContentType.Pfx),
-                            (string)null,
-                            X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.UserKeySet);
-
-                        my.Add(cert);
-                        using (var root = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
-                        {
-                            root.Open(OpenFlags.ReadWrite);
-                            root.Add(cert); // one-time Windows trust prompt -> click Yes
-                        }
-
-                        Log("Certificate created and trusted for the current user.");
-                        Log("(If Windows shows a security-warning dialog, click Yes to trust it.)");
-                        return cert;
-                    }
-                }
-            }
         }
 
         // --- token exchange --------------------------------------------------------
