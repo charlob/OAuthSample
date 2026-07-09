@@ -19,10 +19,9 @@ namespace OAuthSample
     ///
     /// The callback capture itself lives in <see cref="LoopbackCallbackListener"/>
     /// (shared with the OidcClient-based <see cref="OidcClientForm"/>): http via
-    /// <see cref="System.Net.HttpListener"/>, https via in-process TLS
-    /// (<c>TcpListener</c> + <c>SslStream</c>) which bypasses http.sys. This form owns
+    /// <see cref="System.Net.HttpListener"/>, https via in-process TLS. This form owns
     /// the parts that are the actual lesson: building the request, PKCE, the state
-    /// check, and the token exchange.
+    /// check, the token exchange, and rendering the signed-in landing page.
     /// </summary>
     public sealed class MainForm : Form
     {
@@ -172,54 +171,56 @@ namespace OAuthSample
             Log("  state:     " + state);
             Log("  challenge: " + codeChallenge + " (S256)");
 
-            // Start the loopback listener (it binds synchronously before returning the
-            // task), then open the browser. Same shared listener the OidcClient form uses.
+            // renderResult runs when the real callback arrives, with the browser response
+            // still open — so we validate, exchange, and hand back the finished page.
+            async Task<string> RenderResult(CallbackInfo ci)
+            {
+                if (ci.Error != null)
+                {
+                    Log("  Authorization error: " + ci.Error + " - " + ci.ErrorDescription);
+                    return LandingPage.Error("Authorization failed: " + ci.Error);
+                }
+                if (ci.State != state)
+                {
+                    Log("  WARNING: state mismatch (possible CSRF). Expected " + state + " got " + ci.State);
+                    return LandingPage.Error("State mismatch — aborting.");
+                }
+                if (string.IsNullOrEmpty(ci.Code))
+                {
+                    Log("  No authorization code found in callback.");
+                    return LandingPage.Error("No authorization code in the callback.");
+                }
+
+                Log("");
+                Log("Authorization code captured. Exchanging for tokens...");
+                var (name, expiry) = await ExchangeCodeAsync(authority, clientId, redirectUri, ci.Code, codeVerifier);
+                if (name == null)
+                    return LandingPage.Error("Token exchange failed — see the app log.");
+                return LandingPage.Success(name, expiry);
+            }
+
             var listener = new LoopbackCallbackListener(Log);
-            Task<string> waitForCallback = listener.WaitForCallbackAsync(redirect, CancellationToken.None);
+            Task<CallbackInfo> waitForCallback =
+                listener.WaitForCallbackAsync(redirect, CancellationToken.None, RenderResult);
 
             Log("Opening browser for authorization...");
             LaunchBrowser(authorizeUrl.ToString());
 
-            string callbackUrl;
             try
             {
-                callbackUrl = await waitForCallback;
+                await waitForCallback;
             }
             catch (Exception ex)
             {
                 Log("Listener error: " + ex.Message);
-                return;
             }
-
-            // Validate the callback ourselves — this is a "lesson" part of the flow.
-            var callback = ParseQuery(callbackUrl);
-            if (callback.ContainsKey("error"))
-            {
-                Log("  Authorization error: " + callback["error"] + " - " +
-                    (callback.ContainsKey("error_description") ? callback["error_description"] : ""));
-                return;
-            }
-            string returnedState = callback.ContainsKey("state") ? callback["state"] : null;
-            if (returnedState != state)
-            {
-                Log("  WARNING: state mismatch (possible CSRF). Expected " + state + " got " + returnedState);
-                return;
-            }
-            string code = callback.ContainsKey("code") ? callback["code"] : null;
-            if (string.IsNullOrEmpty(code))
-            {
-                Log("  No authorization code found in callback.");
-                return;
-            }
-
-            Log("");
-            Log("Authorization code captured. Exchanging for tokens...");
-            await ExchangeCodeAsync(authority, clientId, redirectUri, code, codeVerifier);
         }
 
         // --- token exchange --------------------------------------------------------
 
-        private async Task ExchangeCodeAsync(
+        /// <summary>Exchanges the code for tokens, logs them, and returns the display name
+        /// and access-token expiry for the landing page. Returns (null, default) on failure.</summary>
+        private async Task<(string name, DateTimeOffset expiry)> ExchangeCodeAsync(
             string authority, string clientId, string redirectUri, string code, string codeVerifier)
         {
             var form = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -243,14 +244,17 @@ namespace OAuthSample
             {
                 Log("  Token endpoint returned an error:");
                 Log("  " + body);
-                return;
+                return (null, default);
             }
+
+            Dictionary<string, object> map = null;
+            try { map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body); }
+            catch { /* fall back to raw body below */ }
 
             Log("");
             Log("=== Token response ===");
-            try
+            if (map != null)
             {
-                var map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body);
                 foreach (var kvp in map)
                 {
                     string val = kvp.Value?.ToString() ?? "";
@@ -259,11 +263,74 @@ namespace OAuthSample
                     Log("  " + kvp.Key + ": " + val);
                 }
             }
-            catch
+            else
             {
                 Log(body);
             }
             Log("======================");
+
+            return (DisplayNameFrom(map), ExpiryFrom(map));
+        }
+
+        // --- claims / expiry extraction --------------------------------------------
+
+        private static string DisplayNameFrom(Dictionary<string, object> tokenResponse)
+        {
+            if (tokenResponse == null || !tokenResponse.TryGetValue("id_token", out var idt) || idt == null)
+                return "(unknown user)";
+
+            var claims = DecodeJwtPayload(idt.ToString());
+            if (claims == null)
+                return "(unknown user)";
+
+            foreach (var key in new[] { "name", "preferred_username", "email", "sub" })
+                if (claims.TryGetValue(key, out var v) && v != null && v.ToString().Length > 0)
+                    return v.ToString();
+
+            return "(unknown user)";
+        }
+
+        private static DateTimeOffset ExpiryFrom(Dictionary<string, object> tokenResponse)
+        {
+            if (tokenResponse == null)
+                return DateTimeOffset.MinValue;
+
+            if (tokenResponse.TryGetValue("expires_in", out var ei) && ei != null &&
+                int.TryParse(ei.ToString(), out var seconds))
+                return DateTimeOffset.Now.AddSeconds(seconds);
+
+            if (tokenResponse.TryGetValue("id_token", out var idt) && idt != null)
+            {
+                var claims = DecodeJwtPayload(idt.ToString());
+                if (claims != null && claims.TryGetValue("exp", out var exp) && exp != null &&
+                    long.TryParse(exp.ToString(), out var unix))
+                    return DateTimeOffset.FromUnixTimeSeconds(unix);
+            }
+
+            return DateTimeOffset.MinValue;
+        }
+
+        private static Dictionary<string, object> DecodeJwtPayload(string jwt)
+        {
+            try
+            {
+                var parts = jwt.Split('.');
+                if (parts.Length < 2)
+                    return null;
+
+                string payload = parts[1].Replace('-', '+').Replace('_', '/');
+                switch (payload.Length % 4)
+                {
+                    case 2: payload += "=="; break;
+                    case 3: payload += "="; break;
+                }
+                string json = Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+                return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // --- helpers ---------------------------------------------------------------
@@ -271,24 +338,6 @@ namespace OAuthSample
         private void LaunchBrowser(string url)
         {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        }
-
-        private static Dictionary<string, string> ParseQuery(string target)
-        {
-            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            int q = target.IndexOf('?');
-            if (q < 0)
-                return result;
-            foreach (var pair in target.Substring(q + 1).Split('&'))
-            {
-                if (pair.Length == 0)
-                    continue;
-                int eq = pair.IndexOf('=');
-                string key = eq >= 0 ? pair.Substring(0, eq) : pair;
-                string val = eq >= 0 ? pair.Substring(eq + 1) : "";
-                result[Uri.UnescapeDataString(key)] = Uri.UnescapeDataString(val);
-            }
-            return result;
         }
 
         private static byte[] Sha256(string input)

@@ -11,35 +11,49 @@ using System.Threading.Tasks;
 
 namespace OAuthSample
 {
+    /// <summary>What was captured from the OAuth redirect.</summary>
+    public sealed class CallbackInfo
+    {
+        public string Url;
+        public string Code;
+        public string State;
+        public string Error;
+        public string ErrorDescription;
+    }
+
     /// <summary>
-    /// Waits for a single OAuth redirect on a loopback address and returns the full
-    /// callback URL (including <c>?code=...&amp;state=...</c>). Handles <c>http</c> via
+    /// Waits for a single OAuth redirect on a loopback address. Handles <c>http</c> via
     /// <see cref="HttpListener"/> and <c>https</c> via in-process TLS
     /// (<see cref="TcpListener"/> + <see cref="SslStream"/>), which bypasses http.sys —
-    /// the reason the raw HttpListener can't receive an HTTPS loopback callback.
+    /// the reason a raw HttpListener can't receive an HTTPS loopback callback.
     ///
-    /// This is the reusable piece behind <see cref="TlsLoopbackBrowser"/>, so the
-    /// OidcClient library can use the same trick MainForm uses by hand.
+    /// When the real callback arrives, <c>renderResult</c> is invoked with the browser
+    /// response still open; whatever HTML it returns is sent back and the connection
+    /// closes. That lets the caller finish the token exchange first, so the landing page
+    /// can show the signed-in user and expiry.
     /// </summary>
     public sealed class LoopbackCallbackListener
     {
         private readonly Action<string> _log;
+        private int _handled; // ensures renderResult runs at most once
 
         public LoopbackCallbackListener(Action<string> log)
         {
             _log = log;
         }
 
-        public Task<string> WaitForCallbackAsync(Uri redirect, CancellationToken cancellationToken)
+        public Task<CallbackInfo> WaitForCallbackAsync(
+            Uri redirect, CancellationToken cancellationToken, Func<CallbackInfo, Task<string>> renderResult)
         {
             return redirect.Scheme == Uri.UriSchemeHttps
-                ? WaitHttpsAsync(redirect, cancellationToken)
-                : WaitHttpAsync(redirect, cancellationToken);
+                ? WaitHttpsAsync(redirect, cancellationToken, renderResult)
+                : WaitHttpAsync(redirect, cancellationToken, renderResult);
         }
 
         // --- http (http.sys / HttpListener) ----------------------------------------
 
-        private async Task<string> WaitHttpAsync(Uri redirect, CancellationToken cancellationToken)
+        private async Task<CallbackInfo> WaitHttpAsync(
+            Uri redirect, CancellationToken cancellationToken, Func<CallbackInfo, Task<string>> renderResult)
         {
             string root = redirect.Scheme + "://" + redirect.Host + ":" + redirect.Port + "/";
             var listener = new HttpListener();
@@ -56,27 +70,41 @@ namespace OAuthSample
                     var req = ctx.Request;
                     _log("  <- " + req.HttpMethod + " " + req.Url.PathAndQuery);
 
-                    bool done = req.QueryString["code"] != null || req.QueryString["error"] != null;
-                    WriteHttpListener(ctx, done);
-                    if (done)
-                        return req.Url.ToString();
+                    var info = Parse(req.Url.ToString());
+                    if (info.Code == null && info.Error == null)
+                    {
+                        WriteHttp(ctx, 404, LandingPage.Waiting());
+                        continue;
+                    }
+
+                    string html = await renderResult(info);
+                    WriteHttp(ctx, info.Error != null ? 400 : 200, html);
+                    return info;
                 }
             }
         }
 
-        private static void WriteHttpListener(HttpListenerContext ctx, bool done)
+        private static void WriteHttp(HttpListenerContext ctx, int status, string html)
         {
-            byte[] buffer = Encoding.UTF8.GetBytes(Page(done));
-            ctx.Response.StatusCode = done ? 200 : 404;
-            ctx.Response.ContentType = "text/html";
-            ctx.Response.ContentLength64 = buffer.Length;
-            ctx.Response.OutputStream.Write(buffer, 0, buffer.Length);
-            ctx.Response.OutputStream.Close();
+            try
+            {
+                byte[] buffer = Encoding.UTF8.GetBytes(html);
+                ctx.Response.StatusCode = status;
+                ctx.Response.ContentType = "text/html; charset=utf-8";
+                ctx.Response.ContentLength64 = buffer.Length;
+                ctx.Response.OutputStream.Write(buffer, 0, buffer.Length);
+                ctx.Response.OutputStream.Close();
+            }
+            catch
+            {
+                // Browser may have already gone; nothing useful to do.
+            }
         }
 
         // --- https (in-process TLS) -------------------------------------------------
 
-        private async Task<string> WaitHttpsAsync(Uri redirect, CancellationToken cancellationToken)
+        private async Task<CallbackInfo> WaitHttpsAsync(
+            Uri redirect, CancellationToken cancellationToken, Func<CallbackInfo, Task<string>> renderResult)
         {
             var cert = LoopbackCertificate.GetOrCreate(_log);
 
@@ -99,11 +127,11 @@ namespace OAuthSample
 
             _log("Listening (in-process TLS) on https://" + redirect.Host + ":" + redirect.Port + "/");
 
-            var result = new TaskCompletionSource<string>();
+            var result = new TaskCompletionSource<CallbackInfo>();
             using (cancellationToken.Register(() => result.TrySetCanceled()))
             {
                 foreach (var l in listeners)
-                    _ = AcceptLoop(l, cert, redirect, result);
+                    _ = AcceptLoop(l, cert, redirect, renderResult, result);
 
                 try
                 {
@@ -119,18 +147,22 @@ namespace OAuthSample
             }
         }
 
-        private async Task AcceptLoop(TcpListener l, X509Certificate2 cert, Uri redirect, TaskCompletionSource<string> result)
+        private async Task AcceptLoop(
+            TcpListener l, X509Certificate2 cert, Uri redirect,
+            Func<CallbackInfo, Task<string>> renderResult, TaskCompletionSource<CallbackInfo> result)
         {
             while (!result.Task.IsCompleted)
             {
                 TcpClient client;
                 try { client = await l.AcceptTcpClientAsync(); }
                 catch { return; }
-                _ = HandleAsync(client, cert, redirect, result);
+                _ = HandleAsync(client, cert, redirect, renderResult, result);
             }
         }
 
-        private async Task HandleAsync(TcpClient client, X509Certificate2 cert, Uri redirect, TaskCompletionSource<string> result)
+        private async Task HandleAsync(
+            TcpClient client, X509Certificate2 cert, Uri redirect,
+            Func<CallbackInfo, Task<string>> renderResult, TaskCompletionSource<CallbackInfo> result)
         {
             try
             {
@@ -148,12 +180,23 @@ namespace OAuthSample
                     string target = parts.Length > 1 ? parts[1] : "/";
                     _log("  <- " + method + " " + target);
 
-                    bool done = target.IndexOf("code=", StringComparison.Ordinal) >= 0
-                             || target.IndexOf("error=", StringComparison.Ordinal) >= 0;
-                    await WriteTlsAsync(ssl, done);
+                    var info = Parse(redirect.GetLeftPart(UriPartial.Authority) + target);
+                    if (info.Code == null && info.Error == null)
+                    {
+                        await WriteTls(ssl, 404, LandingPage.Waiting());
+                        return; // stray request (favicon, probe) — keep waiting
+                    }
 
-                    if (done)
-                        result.TrySetResult(redirect.GetLeftPart(UriPartial.Authority) + target);
+                    // Only the first real callback renders the result; any racing one gets a generic page.
+                    if (Interlocked.Exchange(ref _handled, 1) == 1)
+                    {
+                        await WriteTls(ssl, 200, LandingPage.Complete());
+                        return;
+                    }
+
+                    string html = await renderResult(info);
+                    await WriteTls(ssl, info.Error != null ? 400 : 200, html);
+                    result.TrySetResult(info);
                 }
             }
             catch (Exception ex)
@@ -181,11 +224,12 @@ namespace OAuthSample
             return null;
         }
 
-        private static async Task WriteTlsAsync(SslStream ssl, bool done)
+        private static async Task WriteTls(SslStream ssl, int status, string html)
         {
-            byte[] body = Encoding.UTF8.GetBytes(Page(done));
+            string reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 400 ? "Bad Request" : "OK";
+            byte[] body = Encoding.UTF8.GetBytes(html);
             string head =
-                "HTTP/1.1 " + (done ? "200 OK" : "404 Not Found") + "\r\n" +
+                "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: text/html; charset=utf-8\r\n" +
                 "Content-Length: " + body.Length + "\r\n" +
                 "Connection: close\r\n\r\n";
@@ -195,12 +239,37 @@ namespace OAuthSample
             await ssl.FlushAsync();
         }
 
-        private static string Page(bool done)
+        // --- parsing ----------------------------------------------------------------
+
+        private static CallbackInfo Parse(string url)
         {
-            string html = done
-                ? "<h2>Authentication complete</h2><p>You can close this window and return to the app.</p>"
-                : "Waiting for OAuth callback...";
-            return "<html><body style='font-family:Segoe UI,Arial,sans-serif'>" + html + "</body></html>";
+            var q = ParseQuery(url);
+            return new CallbackInfo
+            {
+                Url = url,
+                Code = q.TryGetValue("code", out var c) ? c : null,
+                State = q.TryGetValue("state", out var s) ? s : null,
+                Error = q.TryGetValue("error", out var e) ? e : null,
+                ErrorDescription = q.TryGetValue("error_description", out var d) ? d : null,
+            };
+        }
+
+        private static Dictionary<string, string> ParseQuery(string url)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int q = url.IndexOf('?');
+            if (q < 0)
+                return result;
+            foreach (var pair in url.Substring(q + 1).Split('&'))
+            {
+                if (pair.Length == 0)
+                    continue;
+                int eq = pair.IndexOf('=');
+                string key = eq >= 0 ? pair.Substring(0, eq) : pair;
+                string val = eq >= 0 ? pair.Substring(eq + 1) : "";
+                result[Uri.UnescapeDataString(key)] = Uri.UnescapeDataString(val);
+            }
+            return result;
         }
     }
 }

@@ -33,15 +33,18 @@ namespace OAuthSample
 
             // Start listening BEFORE opening the browser (WaitForCallbackAsync binds the
             // socket synchronously up to its first await), so there's no redirect race.
-            Task<string> waitForCallback = listener.WaitForCallbackAsync(_redirect, cancellationToken);
+            // OidcClient does the token exchange itself after we return, so the page can't
+            // show the user/expiry here — render the generic "complete" page.
+            Task<CallbackInfo> waitForCallback = listener.WaitForCallbackAsync(
+                _redirect, cancellationToken, ci => Task.FromResult(LandingPage.Complete()));
 
             _log("Opening browser for authorization...");
             Process.Start(new ProcessStartInfo(options.StartUrl) { UseShellExecute = true });
 
             try
             {
-                string callbackUrl = await waitForCallback;
-                return new BrowserResult { ResultType = BrowserResultType.Success, Response = callbackUrl };
+                CallbackInfo info = await waitForCallback;
+                return new BrowserResult { ResultType = BrowserResultType.Success, Response = info.Url };
             }
             catch (OperationCanceledException)
             {

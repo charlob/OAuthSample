@@ -11,11 +11,12 @@ namespace OAuthSample
     /// </summary>
     public sealed class LauncherForm : Form
     {
+        private const int Square = 200;
+
         public LauncherForm()
         {
             Text = "OAuth 2.0 Sample";
-            Width = 560;
-            Height = 400;
+            ClientSize = new Size(500, 330);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -25,24 +26,47 @@ namespace OAuthSample
             var layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 1,
+                ColumnCount = 2,
+                RowCount = 3,
                 Padding = new Padding(24),
-                AutoSize = false,
             };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));           // heading
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, Square + 16)); // buttons
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));       // spacer/hint
             Controls.Add(layout);
 
-            AddHeading(layout, "Choose an implementation");
+            var heading = new Label
+            {
+                Text = "Choose an implementation",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+                Margin = new Padding(3, 0, 3, 16),
+            };
+            layout.Controls.Add(heading, 0, 0);
+            layout.SetColumnSpan(heading, 2);
 
-            AddButton(layout, "Hand-rolled  (no OAuth library)", (s, e) => Open(new MainForm()));
-            AddDescription(layout, "Builds the Authorization Code + PKCE flow by hand so you can see every " +
-                                   "step: the request, the callback capture, and the token exchange.");
+            layout.Controls.Add(MakeCard(
+                "Hand-rolled",
+                "No OAuth library.\nSee every step of the\nflow by hand.",
+                (s, e) => Open(new MainForm())), 0, 1);
 
-            AddButton(layout, "OidcClient library  (Duende)", (s, e) => Open(new OidcClientForm()));
-            AddDescription(layout, "The same login via Duende.IdentityModel.OidcClient — one LoginAsync() " +
-                                   "call handles discovery, PKCE, state and the token exchange.");
+            layout.Controls.Add(MakeCard(
+                "OidcClient\n(Duende)",
+                "One LoginAsync() call.\nThe library does the\nheavy lifting.",
+                (s, e) => Open(new OidcClientForm())), 1, 1);
 
-            AddDescription(layout, "Both share the same loopback callback listener (http + in-process TLS).");
+            var hint = new Label
+            {
+                Text = "Both share the same loopback callback listener (http + in-process TLS).",
+                AutoSize = true,
+                MaximumSize = new Size(452, 0),
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(3, 14, 3, 3),
+            };
+            layout.Controls.Add(hint, 0, 2);
+            layout.SetColumnSpan(hint, 2);
         }
 
         private void Open(Form form)
@@ -53,43 +77,20 @@ namespace OAuthSample
             Show();
         }
 
-        private static void AddHeading(TableLayoutPanel layout, string text)
-        {
-            layout.Controls.Add(new Label
-            {
-                Text = text,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
-                Margin = new Padding(3, 3, 3, 14),
-            });
-        }
-
-        private static void AddButton(TableLayoutPanel layout, string text, EventHandler onClick)
+        private static Button MakeCard(string title, string subtitle, EventHandler onClick)
         {
             var btn = new Button
             {
-                Text = text,
-                Width = 480,
-                Height = 40,
-                Margin = new Padding(0, 6, 0, 2),
-                Anchor = AnchorStyles.Left,
+                Text = title + "\n\n" + subtitle,
+                Size = new Size(Square, Square),
+                Anchor = AnchorStyles.None,
                 FlatStyle = FlatStyle.System,
                 Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseCompatibleTextRendering = false,
             };
             btn.Click += onClick;
-            layout.Controls.Add(btn);
-        }
-
-        private static void AddDescription(TableLayoutPanel layout, string text)
-        {
-            layout.Controls.Add(new Label
-            {
-                Text = text,
-                AutoSize = true,
-                MaximumSize = new Size(480, 0),
-                ForeColor = SystemColors.GrayText,
-                Margin = new Padding(3, 0, 3, 10),
-            });
+            return btn;
         }
     }
 }
