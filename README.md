@@ -8,6 +8,22 @@ It exists to make one thing obvious: **where the callback is captured**. Every
 request that hits the loopback listener is logged, so you can watch the `?code=`
 arrive instead of guessing why it didn't.
 
+## Two forms: hand-rolled vs library
+
+- **`MainForm`** — the flow built by hand (`HttpListener` for http, raw
+  `TcpListener` + `SslStream` for https). No NuGet packages. Best for *seeing*
+  every step.
+- **`OidcClientForm`** — the same login via the **`IdentityModel.OidcClient`**
+  library. One `LoginAsync()` call does discovery, PKCE, the `state` check and the
+  token exchange. Open it with the **"OidcClient version →"** button on `MainForm`.
+
+The library form still needs a browser that can capture an **https** loopback
+callback (OidcClient's built-in one uses `http://localhost`, which MLA rejects),
+so it plugs in `TlsLoopbackBrowser` — a custom `IBrowser` that reuses the same
+in-process TLS listener. That's the key lesson: **a library removes ~90% of the
+boilerplate, but the https-loopback problem is orthogonal** — you still supply the
+listener when the IdP forces `https://localhost`.
+
 ## Using it
 
 1. Open `OAuthSample.sln` in Visual Studio and run (F5), or build the

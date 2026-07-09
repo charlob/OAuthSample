@@ -16,8 +16,19 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Net.Http" />
-    <!-- JavaScriptSerializer, used to pretty-print the token JSON with no NuGet deps. -->
+    <!-- JavaScriptSerializer, used to pretty-print the token JSON in MainForm. -->
     <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Used only by OidcClientForm (the library-based second form). MainForm and the
+         in-process TLS listener use no NuGet packages.
+         NOTE: the IdentityModel libraries have since moved to Duende. If restore fails
+         or you want the current package, switch this to
+             Duende.IdentityModel.OidcClient
+         and change the `using IdentityModel.OidcClient*` lines to
+             using Duende.IdentityModel.OidcClient*   (Browser sub-namespace too). -->
+    <PackageReference Include="IdentityModel.OidcClient" Version="5.*" />
   </ItemGroup>
 
 </Project>

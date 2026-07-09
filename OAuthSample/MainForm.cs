@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -75,8 +76,28 @@ namespace OAuthSample
                 Anchor = AnchorStyles.Left,
             };
             _btnConnect.Click += OnConnectClick;
+
+            var btnLibrary = new Button
+            {
+                Text = "OidcClient version →",
+                AutoSize = true,
+                Padding = new Padding(16, 4, 16, 4),
+                Anchor = AnchorStyles.Left,
+            };
+            btnLibrary.Click += (s, e) => new OidcClientForm().Show();
+
+            var buttonRow = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                Dock = DockStyle.Fill,
+                WrapContents = false,
+                Margin = new Padding(0),
+            };
+            buttonRow.Controls.Add(_btnConnect);
+            buttonRow.Controls.Add(btnLibrary);
+
             layout.Controls.Add(new Label { Text = "", AutoSize = true }, 0, layout.RowCount);
-            layout.Controls.Add(_btnConnect, 1, layout.RowCount);
+            layout.Controls.Add(buttonRow, 1, layout.RowCount);
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowCount++;
 
