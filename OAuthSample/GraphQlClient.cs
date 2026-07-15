@@ -16,7 +16,8 @@ namespace OAuthSample
 
         public const string GetUserDetailsQuery =
             "query GetUserDetails { userDetails { firstName lastName email isNewUser " +
-            "defaultAccount accounts { envdAccountId accountLabel accountId accountType } } }";
+            "defaultAccount accounts { envdAccountId accountLabel accountId accountType roles " +
+            "properties { propertyName accreditations { lPA eU mSA nFAS eUGFHQB hRG } } } } }";
 
         /// <summary>POSTs a GraphQL query with a Bearer token (and optional envdAccountId header).</summary>
         public static async Task<Tuple<int, string>> PostAsync(
@@ -38,8 +39,9 @@ namespace OAuthSample
             }
         }
 
-        /// <summary>Pulls the envdAccountId out of a GetUserDetails response — the default
-        /// account if identifiable, otherwise the first account.</summary>
+        /// <summary>Pulls the envdAccountId out of a GetUserDetails response. Per the MLA
+        /// reference, <c>userDetails.defaultAccount</c> holds it directly; falls back to the
+        /// first account's envdAccountId.</summary>
         public static string ExtractEnvdAccountId(string body)
         {
             try
@@ -50,25 +52,21 @@ namespace OAuthSample
                 if (!data.TryGetValue("userDetails", out var u) || !(u is Dictionary<string, object> ud))
                     return null;
 
-                string def = ud.TryGetValue("defaultAccount", out var da) && da != null ? da.ToString() : null;
-                if (!ud.TryGetValue("accounts", out var a) || !(a is IEnumerable accounts))
-                    return null;
+                // Primary: defaultAccount is the envdAccountId.
+                if (ud.TryGetValue("defaultAccount", out var da) && da != null && da.ToString().Length > 0)
+                    return da.ToString();
 
-                string first = null, matched = null;
-                foreach (var item in accounts)
+                // Fallback: first account's envdAccountId.
+                if (ud.TryGetValue("accounts", out var a) && a is IEnumerable accounts)
                 {
-                    if (!(item is Dictionary<string, object> acc))
-                        continue;
-                    string envd = acc.TryGetValue("envdAccountId", out var e) && e != null ? e.ToString() : null;
-                    if (string.IsNullOrEmpty(envd))
-                        continue;
-                    if (first == null)
-                        first = envd;
-                    string accId = acc.TryGetValue("accountId", out var ai) && ai != null ? ai.ToString() : null;
-                    if (def != null && (def == accId || def == envd))
-                        matched = envd;
+                    foreach (var item in accounts)
+                    {
+                        if (item is Dictionary<string, object> acc &&
+                            acc.TryGetValue("envdAccountId", out var e) && e != null && e.ToString().Length > 0)
+                            return e.ToString();
+                    }
                 }
-                return matched ?? first;
+                return null;
             }
             catch
             {

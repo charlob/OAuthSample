@@ -51,7 +51,7 @@ namespace OAuthSample
             _txtClientId = AddRow(layout, "Client ID", "");
             _txtRedirect = AddRow(layout, "Callback URI", "https://localhost:5021/callback/envd/");
             _txtScope = AddRow(layout, "Scope", "openid profile email offline_access");
-            _txtApi = AddRow(layout, "GraphQL API", "");
+            _txtApi = AddRow(layout, "GraphQL API", "https://api.uat.integritysystems.com.au/v2/graphql");
             _txtEnvd = AddRow(layout, "envd Account Id", "");
 
             _btnLogin = MakeButton("Login (OidcClient)", OnLoginClick);
