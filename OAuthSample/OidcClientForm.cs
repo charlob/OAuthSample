@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Duende.IdentityModel.Client;
 using Duende.IdentityModel.OidcClient;
 
 namespace OAuthSample
@@ -21,6 +23,7 @@ namespace OAuthSample
         private readonly TextBox _txtClientId;
         private readonly TextBox _txtRedirect;
         private readonly TextBox _txtScope;
+        private readonly TextBox _txtAudience;
         private readonly TextBox _txtApi;
         private readonly TextBox _txtEnvd;
         private readonly Button _btnLogin;
@@ -51,6 +54,7 @@ namespace OAuthSample
             _txtClientId = AddRow(layout, "Client ID", "");
             _txtRedirect = AddRow(layout, "Callback URI", "https://localhost:5021/callback/envd/");
             _txtScope = AddRow(layout, "Scope", "openid profile email offline_access");
+            _txtAudience = AddRow(layout, "Audience (opt.)", "https://testlpav4.nlis.com.au");
             _txtApi = AddRow(layout, "GraphQL API", "https://api.uat.integritysystems.com.au/v2/graphql");
             _txtEnvd = AddRow(layout, "envd Account Id", "");
 
@@ -180,10 +184,24 @@ namespace OAuthSample
                 Browser = new TlsLoopbackBrowser(redirectUri, Log),
             };
 
+            // Auth0/MLA only issues a JWT access token the API will accept when an audience
+            // (API identifier) is requested on the authorize call. The library has no dedicated
+            // Audience option, so pass it as a front-channel extra parameter — the same
+            // &audience=... the hand-rolled form appends. Without it the access token is opaque
+            // (alg: dir) and the GraphQL API returns 401.
+            var request = new LoginRequest();
+            string audience = _txtAudience.Text.Trim();
+            if (!string.IsNullOrEmpty(audience))
+            {
+                request.FrontChannelExtraParameters = new Parameters(
+                    new[] { new KeyValuePair<string, string>("audience", audience) });
+                Log("  audience: " + audience);
+            }
+
             Log("");
             Log("Starting OidcClient login...");
             var client = new OidcClient(options);
-            LoginResult result = await client.LoginAsync(new LoginRequest());
+            LoginResult result = await client.LoginAsync(request);
 
             if (result.IsError)
             {
