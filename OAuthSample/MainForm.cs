@@ -31,12 +31,10 @@ namespace OAuthSample
         private readonly TextBox _txtRedirect;
         private readonly TextBox _txtScope;
         private readonly TextBox _txtAudience;
-        private readonly TextBox _txtApi;
-        private readonly TextBox _txtEnvd;
         private readonly Button _btnConnect;
         private readonly Button _btnRefresh;
         private readonly Button _btnDelete;
-        private readonly Button _btnCallApi;
+        private readonly Button _btnConsole;
         private readonly Label _lblStatus;
         private readonly TextBox _txtLog;
 
@@ -64,23 +62,21 @@ namespace OAuthSample
             Controls.Add(layout);
 
             _txtAuthority = AddRow(layout, "Authority", "https://sso-s.mla.com.au");
-            _txtClientId = AddRow(layout, "Client ID", "");
+            _txtClientId = AddRow(layout, "Client ID", "Ssn0VWmqXMxDrpuxWzpWHZ1qgzr4AWRG");
             _txtRedirect = AddRow(layout, "Callback URI", "https://localhost:5021/callback/envd/");
             _txtScope = AddRow(layout, "Scope", "openid profile email offline_access");
             _txtAudience = AddRow(layout, "Audience (opt.)", "https://testlpav4.nlis.com.au");
-            _txtApi = AddRow(layout, "GraphQL API", "https://api.uat.integritysystems.com.au/v2/graphql");
-            _txtEnvd = AddRow(layout, "envd Account Id", "");
 
             _btnConnect = MakeButton("Connect (browser)", OnConnectClick);
             _btnRefresh = MakeButton("Refresh token", OnRefreshClick);
             _btnDelete = MakeButton("Delete saved token", OnDeleteClick);
-            _btnCallApi = MakeButton("Call test API", OnCallApiClick);
+            _btnConsole = MakeButton("API Console", OnOpenConsoleClick);
 
             var buttonRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
             buttonRow.Controls.Add(_btnConnect);
             buttonRow.Controls.Add(_btnRefresh);
             buttonRow.Controls.Add(_btnDelete);
-            buttonRow.Controls.Add(_btnCallApi);
+            buttonRow.Controls.Add(_btnConsole);
             layout.Controls.Add(new Label { Text = "", AutoSize = true }, 0, layout.RowCount);
             layout.Controls.Add(buttonRow, 1, layout.RowCount);
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -152,7 +148,7 @@ namespace OAuthSample
             _btnConnect.Enabled = !_busy && !hasSession;
             _btnRefresh.Enabled = !_busy && hasSession;
             _btnDelete.Enabled = !_busy && rec != null;
-            _btnCallApi.Enabled = !_busy && rec != null && !string.IsNullOrEmpty(rec.AccessToken);
+            _btnConsole.Enabled = !_busy && rec != null && !string.IsNullOrEmpty(rec.AccessToken);
 
             if (rec == null)
             {
@@ -312,61 +308,13 @@ namespace OAuthSample
             UpdateButtons();
         }
 
-        // --- Call test API ----------------------------------------------------------
+        // --- API Console ------------------------------------------------------------
 
-        private async void OnCallApiClick(object sender, EventArgs e)
+        private void OnOpenConsoleClick(object sender, EventArgs e)
         {
-            SetBusy(true);
-            try { await CallApiAsync(); }
-            catch (Exception ex) { Log("ERROR: " + ex.Message); }
-            finally { SetBusy(false); }
-        }
-
-        private async Task CallApiAsync()
-        {
-            var rec = _store.Load();
-            if (rec == null || string.IsNullOrEmpty(rec.AccessToken))
-            {
-                Log("No access token — Connect or Refresh first.");
-                return;
-            }
-            string endpoint = _txtApi.Text.Trim();
-            if (string.IsNullOrEmpty(endpoint))
-            {
-                Log("Enter the GraphQL API URL first.");
-                return;
-            }
-
-            string envdHeader = _txtEnvd.Text.Trim();
-
             var console = GetConsole();
             console.ShowConsole(this);
-            console.ClearConsole();
-            console.Write("POST " + endpoint);
-            console.Write("Authorization: Bearer " + Truncate(rec.AccessToken));
-            if (envdHeader.Length > 0)
-                console.Write("envdAccountId: " + envdHeader);
-            console.Write("query GetUserDetails");
-            console.Write("");
-
-            var result = await GraphQlClient.PostAsync(
-                endpoint, rec.AccessToken, GraphQlClient.GetUserDetailsQuery,
-                envdHeader.Length > 0 ? envdHeader : null);
-
-            console.Write("HTTP " + result.Item1);
-            console.Write("");
-            console.WriteJson(result.Item2);
-
-            string envd = GraphQlClient.ExtractEnvdAccountId(result.Item2);
-            if (!string.IsNullOrEmpty(envd))
-            {
-                _txtEnvd.Text = envd;
-                Log("envdAccountId: " + envd);
-            }
-            else
-            {
-                Log("Called API (HTTP " + result.Item1 + "). No envdAccountId found — see the API Console.");
-            }
+            Log("API Console opened. Run 'Get User Details' there to capture the envd Account Id.");
         }
 
         private ApiConsoleForm GetConsole()
@@ -374,12 +322,6 @@ namespace OAuthSample
             if (_console == null || _console.IsDisposed)
                 _console = new ApiConsoleForm();
             return _console;
-        }
-
-        private static string Truncate(string value)
-        {
-            if (string.IsNullOrEmpty(value)) return "(none)";
-            return value.Length > 20 ? value.Substring(0, 20) + "…(" + value.Length + " chars)" : value;
         }
 
         // --- token endpoint ---------------------------------------------------------
