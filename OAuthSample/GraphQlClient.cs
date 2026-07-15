@@ -73,49 +73,5 @@ namespace OAuthSample
                 return null;
             }
         }
-
-        /// <summary>Indents JSON for readable console output; returns non-JSON bodies unchanged.</summary>
-        public static string Pretty(string json)
-        {
-            if (string.IsNullOrWhiteSpace(json))
-                return json ?? "";
-            string trimmed = json.TrimStart();
-            if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '['))
-                return json;
-
-            var sb = new StringBuilder();
-            int indent = 0;
-            bool inString = false, escape = false;
-            foreach (char c in json)
-            {
-                if (inString)
-                {
-                    sb.Append(c);
-                    if (escape) escape = false;
-                    else if (c == '\\') escape = true;
-                    else if (c == '"') inString = false;
-                    continue;
-                }
-                switch (c)
-                {
-                    case '"': inString = true; sb.Append(c); break;
-                    case '{':
-                    case '[': sb.Append(c); indent++; NewLine(sb, indent); break;
-                    case '}':
-                    case ']': indent--; NewLine(sb, indent); sb.Append(c); break;
-                    case ',': sb.Append(c); NewLine(sb, indent); break;
-                    case ':': sb.Append(": "); break;
-                    default:
-                        if (!char.IsWhiteSpace(c)) sb.Append(c);
-                        break;
-                }
-            }
-            return sb.ToString();
-        }
-
-        private static void NewLine(StringBuilder sb, int indent)
-        {
-            sb.Append('\n').Append(new string(' ', Math.Max(0, indent) * 2));
-        }
     }
 }

@@ -31,12 +31,9 @@ namespace OAuthSample
         private readonly TextBox _txtRedirect;
         private readonly TextBox _txtScope;
         private readonly TextBox _txtAudience;
-        private readonly TextBox _txtUser;
-        private readonly TextBox _txtPassword;
         private readonly TextBox _txtApi;
         private readonly TextBox _txtEnvd;
         private readonly Button _btnConnect;
-        private readonly Button _btnPasswordLogin;
         private readonly Button _btnRefresh;
         private readonly Button _btnDelete;
         private readonly Button _btnCallApi;
@@ -71,21 +68,16 @@ namespace OAuthSample
             _txtRedirect = AddRow(layout, "Callback URI", "https://localhost:5021/callback/envd/");
             _txtScope = AddRow(layout, "Scope", "openid profile email offline_access");
             _txtAudience = AddRow(layout, "Audience (opt.)", "https://testlpav4.nlis.com.au");
-            _txtUser = AddRow(layout, "Username (pwd grant)", "");
-            _txtPassword = AddRow(layout, "Password (pwd grant)", "");
-            _txtPassword.PasswordChar = '●';
             _txtApi = AddRow(layout, "GraphQL API", "https://api.uat.integritysystems.com.au/v2/graphql");
             _txtEnvd = AddRow(layout, "envd Account Id", "");
 
             _btnConnect = MakeButton("Connect (browser)", OnConnectClick);
-            _btnPasswordLogin = MakeButton("Password login", OnPasswordLoginClick);
             _btnRefresh = MakeButton("Refresh token", OnRefreshClick);
             _btnDelete = MakeButton("Delete saved token", OnDeleteClick);
             _btnCallApi = MakeButton("Call test API", OnCallApiClick);
 
             var buttonRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
             buttonRow.Controls.Add(_btnConnect);
-            buttonRow.Controls.Add(_btnPasswordLogin);
             buttonRow.Controls.Add(_btnRefresh);
             buttonRow.Controls.Add(_btnDelete);
             buttonRow.Controls.Add(_btnCallApi);
@@ -158,7 +150,6 @@ namespace OAuthSample
             bool hasSession = rec != null && rec.HasRefreshToken;
 
             _btnConnect.Enabled = !_busy && !hasSession;
-            _btnPasswordLogin.Enabled = !_busy && !hasSession;
             _btnRefresh.Enabled = !_busy && hasSession;
             _btnDelete.Enabled = !_busy && rec != null;
             _btnCallApi.Enabled = !_busy && rec != null && !string.IsNullOrEmpty(rec.AccessToken);
@@ -263,63 +254,6 @@ namespace OAuthSample
             catch (Exception ex) { Log("Listener error: " + ex.Message); }
         }
 
-        // --- Password grant (Resource Owner Password) -------------------------------
-
-        private async void OnPasswordLoginClick(object sender, EventArgs e)
-        {
-            SetBusy(true);
-            try { await PasswordLoginAsync(); }
-            catch (Exception ex) { Log("ERROR: " + ex.Message); }
-            finally { SetBusy(false); }
-        }
-
-        private async Task PasswordLoginAsync()
-        {
-            string authority = _txtAuthority.Text.Trim().TrimEnd('/');
-            string clientId = _txtClientId.Text.Trim();
-            string scope = _txtScope.Text.Trim();
-            string audience = _txtAudience.Text.Trim();
-            string user = _txtUser.Text.Trim();
-            string pass = _txtPassword.Text;
-
-            if (string.IsNullOrEmpty(clientId)) { Log("Please enter a Client ID."); return; }
-            if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) { Log("Enter Username and Password for the password grant."); return; }
-
-            // Resource Owner Password grant — matches the MLA Postman "Get Auth Token".
-            var fields = new Dictionary<string, string>
-            {
-                ["grant_type"] = "password",
-                ["username"] = user,
-                ["password"] = pass,
-                ["client_id"] = clientId,
-                ["scope"] = scope,
-            };
-            if (!string.IsNullOrEmpty(audience))
-                fields["audience"] = audience;
-
-            string tokenUrl = authority + "/oauth/token";
-            Log("");
-            Log("Password-grant login (no browser)...");
-            Log("  POST " + tokenUrl + "  (grant_type=password, audience=" + audience + ")");
-
-            HttpResponseMessage resp = await Http.PostAsync(tokenUrl, new FormUrlEncodedContent(fields));
-            string body = await resp.Content.ReadAsStringAsync();
-            Log("  HTTP " + (int)resp.StatusCode + " " + resp.StatusCode);
-
-            if (!resp.IsSuccessStatusCode)
-            {
-                Log("  Login failed:");
-                Log("  " + body);
-                return;
-            }
-
-            var record = BuildRecord(authority, clientId, body, null, null);
-            _store.Save(record);
-            if (!record.HasRefreshToken)
-                Log("  (No refresh token returned.)");
-            Log("  Signed in as " + record.UserName + ".");
-        }
-
         // --- Refresh (silent) -------------------------------------------------------
 
         private async void OnRefreshClick(object sender, EventArgs e)
@@ -421,7 +355,7 @@ namespace OAuthSample
 
             console.Write("HTTP " + result.Item1);
             console.Write("");
-            console.Write(GraphQlClient.Pretty(result.Item2));
+            console.WriteJson(result.Item2);
 
             string envd = GraphQlClient.ExtractEnvdAccountId(result.Item2);
             if (!string.IsNullOrEmpty(envd))

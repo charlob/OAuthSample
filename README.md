@@ -38,10 +38,11 @@ is orthogonal** — you still supply the listener when the IdP forces
    - **Callback URI** – must **exactly match** a redirect URI registered on the
      IdP application (e.g. `https://localhost:5021/callback/envd/`). Both `http`
      and `https` loopback URIs work — see the capture notes below.
-   - **Scope** – defaults to `openid profile email`.
+   - **Scope** – defaults to `openid profile email offline_access`.
    - **Audience** – optional; set it (to your API identifier) if you need an
      Auth0 **access token** for a specific API rather than just an id token.
-     *(Hand-rolled form only.)*
+     Defaults to `https://testlpav4.nlis.com.au` (the eNVD UAT audience) —
+     *hand-rolled form only.*
 4. Click **Connect** (or **Login**). Your browser opens for sign-in/consent; after approval the
    app captures the `code`, exchanges it at `/oauth/token`, and logs the tokens.
 
@@ -70,21 +71,19 @@ you'll see "no refresh token" and only interactive login is available.
 ## Call test API (GraphQL)
 
 The **Call test API** button POSTs the `GetUserDetails` GraphQL query to the URL in
-the **GraphQL API** field, using the stored **access token** as `Authorization:
-Bearer`. The raw response is written to a separate **API Console** window (cleared
-each call), and the `envdAccountId` is pulled out of the response into the **envd
-Account Id** box (used as a header on subsequent calls). Enabled only when a token
-is stored.
+the **GraphQL API** field (defaults to the eNVD UAT endpoint), using the stored
+**access token** as `Authorization: Bearer`. The response is written indented and
+syntax-colored (VS Code dark style — keys, strings, numbers and literals each get
+their own color) to a separate **API Console** window (`ApiConsoleForm.WriteJson`),
+cleared each call. The `envdAccountId` is pulled from `userDetails.defaultAccount`
+into the **envd Account Id** box (used as a header on subsequent calls). Enabled
+only when a token is stored.
 
-Two things to know:
-
-- **Audience.** For the IdP to issue an access token the API will accept, the login
-  must request the right **Audience** (API identifier). The hand-rolled form has an
-  Audience field; because both forms share the token store, a token obtained there
-  is reused by the OidcClient form too. Without the correct audience an Auth0 access
-  token is opaque and the API returns 401.
-- **Endpoint.** Put the eNVD GraphQL endpoint in the **GraphQL API** field (left
-  blank by default).
+**Audience matters.** For the IdP to issue an access token the API will accept, the
+login must request the right **Audience** (API identifier) — see the defaults
+above. Because both forms share the token store, a token obtained on the
+hand-rolled form is reused by the OidcClient form too. Without the correct
+audience, an Auth0 access token is opaque (`alg: dir`) and the API returns 401.
 
 ## The landing page
 

@@ -312,7 +312,7 @@ namespace OAuthSample
 
             console.Write("HTTP " + result.Item1);
             console.Write("");
-            console.Write(GraphQlClient.Pretty(result.Item2));
+            console.WriteJson(result.Item2);
 
             string envd = GraphQlClient.ExtractEnvdAccountId(result.Item2);
             if (!string.IsNullOrEmpty(envd))
